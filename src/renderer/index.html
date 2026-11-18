@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Clipper</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app-container">
+    <header id="top-bar">
+      <div class="nav-cluster">
+        <button id="btn-back" class="nav-btn" title="Back">◀</button>
+        <button id="btn-forward" class="nav-btn" title="Forward">▶</button>
+        <button id="btn-reload" class="nav-btn" title="Reload">↻</button>
+        <button id="btn-home" class="nav-btn site-btn yt" title="YouTube">▶</button>
+        <button id="btn-twitch" class="nav-btn site-btn tw" title="Twitch">T</button>
+      </div>
+
+      <div class="url-bar-container">
+        <input type="text" id="url-input" value="https://www.youtube.com" placeholder="YouTube / Twitch URL or search..." />
+        <button id="btn-go" class="url-go-btn">Go</button>
+      </div>
+
+      <div class="clipper-controls-cluster">
+        <div class="hotkey-pill" id="hotkey-toggle-btn" title="Click to enable/disable hotkeys">
+          <span class="hotkey-kbd">J</span><span class="hotkey-label">Rec</span>
+          <span class="hotkey-divider">/</span>
+          <span class="hotkey-kbd">K</span><span class="hotkey-label">Stop</span>
+          <span class="status-indicator active" id="hotkey-status-dot"></span>
+        </div>
+
+        <div class="points-pill">
+          <button id="btn-mark-in" class="point-btn" title="Set In-Point [I]">A [I]</button>
+          <span id="points-summary" class="points-text">A --:-- · B --:--</span>
+          <button id="btn-mark-out" class="point-btn" title="Set Out-Point [O]">B [O]</button>
+          <button id="btn-clip-ab" class="point-btn clip-btn" title="Replay A→B and record">Clip A→B</button>
+        </div>
+
+        <div class="live-pill">
+          <button id="btn-live-toggle" class="live-toggle" title="Keep a rolling buffer of the last 60s while the video plays">
+            <span class="live-dot"></span><span id="live-text">Live off</span>
+          </button>
+          <button id="btn-live-clip-30" class="live-clip-btn" title="Save the last 30 seconds [G]" disabled>✂ 30s [G]</button>
+          <button id="btn-live-clip" class="live-clip-btn" title="Save the last 60 seconds [H]" disabled>✂ 60s [H]</button>
+          <button id="btn-auto-clip" class="live-clip-btn auto-btn" title="Auto-clip the last 30s when enough of the last 15 chat messages share a word (default 4, auto-tuned per channel every 5 min), or the stream audio suddenly gets much louder">⚡ Auto clip: off</button>
+        </div>
+
+        <button id="btn-manual-rec" class="action-btn rec-btn" title="Record (J) / Stop (K)">
+          <span class="rec-circle"></span><span id="manual-rec-text">Record</span>
+        </button>
+
+        <button id="btn-open-crop-editor" class="action-btn secondary-btn" title="Edit webcam & gameplay rectangles">📐 Layout</button>
+
+        <button id="btn-toggle-queue" class="action-btn queue-btn" title="Background render queue">
+          Queue <span id="queue-badge" class="badge">0</span>
+        </button>
+
+        <button id="btn-open-folder" class="action-btn icon-btn" title="Open final clips folder">📁</button>
+      </div>
+    </header>
+
+    <main id="webview-container">
+      <webview id="yt-webview" src="https://www.youtube.com" allowpopups
+        webpreferences="contextIsolation=false"></webview>
+
+      <div id="host-rec-hud" class="hud-overlay hidden">
+        <span class="pulse-indicator"></span>
+        <span class="hud-title">RECORDING</span>
+        <span id="host-rec-timer" class="hud-timer">00:00</span>
+        <button id="btn-hud-stop" class="hud-stop-btn">Stop [K]</button>
+      </div>
+    </main>
+
+    <aside id="queue-drawer" class="drawer hidden">
+      <div class="drawer-header">
+        <h3>Background Render Queue</h3>
+        <div class="drawer-actions">
+          <button id="btn-drawer-folder" class="tiny-btn">Open Folder</button>
+          <button id="btn-close-queue" class="close-btn">✕</button>
+        </div>
+      </div>
+      <div class="drawer-body">
+        <div id="active-job-card" class="job-card active-card hidden">
+          <div class="job-header">
+            <span class="job-status-badge rendering">RENDERING</span>
+            <span id="active-job-progress-pct" class="progress-pct">0%</span>
+          </div>
+          <div id="active-job-title" class="job-title">Clip</div>
+          <div class="progress-bar-track"><div id="active-job-progress-fill" class="progress-bar-fill"></div></div>
+          <div class="job-meta">
+            <span>1080×1920 composite, low priority</span>
+            <button id="btn-cancel-active" class="cancel-link">Cancel</button>
+          </div>
+        </div>
+        <div class="queue-section-header">Queued & finished</div>
+        <div id="queue-list" class="queue-list"></div>
+      </div>
+    </aside>
+
+    <!-- Layout editor -->
+    <div id="crop-modal" class="modal-backdrop hidden">
+      <div class="modal-window">
+        <div class="modal-header">
+          <div>
+            <h2 id="modal-title">Layout Editor</h2>
+            <p class="modal-subtitle">Draw or drag the two rectangles on the frame. The right side shows the exact 1080×1920 result.</p>
+          </div>
+          <button id="btn-close-modal" class="close-btn">✕</button>
+        </div>
+
+        <div class="modal-body">
+          <div class="editor-left-pane">
+            <div class="pane-header">
+              <div class="selector-tools">
+                <button id="btn-select-webcam" class="tool-btn tool-cam selected">📷 Webcam</button>
+                <button id="btn-select-gameplay" class="tool-btn tool-game">🎮 Gameplay</button>
+
+              </div>
+              <button id="btn-reset-crop" class="tool-btn">↺ Reset</button>
+            </div>
+
+            <div id="canvas-wrapper" class="canvas-wrapper">
+              <div id="canvas-stage" class="canvas-stage">
+                <canvas id="crop-canvas"></canvas>
+                <div id="box-webcam" class="crop-box box-cam" data-box="webcam">
+                  <div class="box-badge cam-badge">WEBCAM</div>
+                  <div class="resize-handle handle-nw" data-handle="nw"></div>
+                  <div class="resize-handle handle-n" data-handle="n"></div>
+                  <div class="resize-handle handle-ne" data-handle="ne"></div>
+                  <div class="resize-handle handle-e" data-handle="e"></div>
+                  <div class="resize-handle handle-se" data-handle="se"></div>
+                  <div class="resize-handle handle-s" data-handle="s"></div>
+                  <div class="resize-handle handle-sw" data-handle="sw"></div>
+                  <div class="resize-handle handle-w" data-handle="w"></div>
+                </div>
+                <div id="box-gameplay" class="crop-box box-game" data-box="gameplay">
+                  <div class="box-badge game-badge">GAMEPLAY</div>
+                  <div class="resize-handle handle-nw" data-handle="nw"></div>
+                  <div class="resize-handle handle-n" data-handle="n"></div>
+                  <div class="resize-handle handle-ne" data-handle="ne"></div>
+                  <div class="resize-handle handle-e" data-handle="e"></div>
+                  <div class="resize-handle handle-se" data-handle="se"></div>
+                  <div class="resize-handle handle-s" data-handle="s"></div>
+                  <div class="resize-handle handle-sw" data-handle="sw"></div>
+                  <div class="resize-handle handle-w" data-handle="w"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="canvas-hint">
+              Each box has the exact shape of its slot on the right, so whatever is inside it fills that slot. Drag to move, drag a corner/edge to scale, drag empty space to draw the selected box, arrow keys nudge (Shift = bigger steps).
+            </div>
+          </div>
+
+          <div class="editor-right-pane">
+            <div class="pane-header">
+              <span class="pane-title">Final output</span>
+              <span class="resolution-tag">1080 × 1920</span>
+            </div>
+
+            <div class="preview-holder">
+              <canvas id="preview-canvas" width="1080" height="1920"></canvas>
+            </div>
+
+            <div class="layout-settings-group">
+              <div class="setting-row">
+                <label for="webcam-shape-select">Webcam (top 30%)</label>
+                <select id="webcam-shape-select" class="dropdown">
+                  <option value="4:3">4:3 wide (768×576)</option>
+                  <option value="3:4">3:4 tall (432×576)</option>
+                  <option value="16:9">16:9 wide (1024×576)</option>
+                  <option value="full">Full width, no side bars (1080×576)</option>
+                </select>
+              </div>
+              <div class="setting-row">
+                <span>Gameplay (bottom 70%)</span>
+                <span class="val-badge">1080×1344</span>
+              </div>
+              <div class="setting-row">
+                <label for="bg-style-select">Background</label>
+                <select id="bg-style-select" class="dropdown">
+                  <option value="blur">Blurred video</option>
+                  <option value="dark">Dark</option>
+                  <option value="black">Black</option>
+                </select>
+              </div>
+              <div class="setting-row">
+                <label><input type="checkbox" id="chk-captions" checked> Captions</label>
+                <div class="slider-val-pair">
+                  <input type="range" id="caption-size-slider" min="60" max="200" step="2" value="120">
+                  <span id="caption-size-display" class="val-badge">120px</span>
+                </div>
+              </div>
+              <div class="setting-row">
+                <label for="caption-pos-slider">Caption height</label>
+                <div class="slider-val-pair">
+                  <input type="range" id="caption-pos-slider" min="10" max="95" step="1" value="81">
+                  <span id="caption-pos-display" class="val-badge">81%</span>
+                </div>
+              </div>
+              <div class="setting-row">
+                <label for="caption-lang-select">Speech language</label>
+                <select id="caption-lang-select" class="dropdown">
+                  <option value="auto">Auto-detect (Hindi as Hinglish)</option>
+                  <option value="en">English</option>
+                  <option value="hi">Hindi → Hinglish (ab dekhna)</option>
+                  <option value="hi-deva">Hindi → देवनागरी</option>
+                </select>
+              </div>
+              <div class="setting-row">
+                <label for="caption-model-select">Caption accuracy</label>
+                <select id="caption-model-select" class="dropdown">
+                  <option value="small">Fast (small model)</option>
+                  <option value="medium">Better (medium, ~1.5 GB one-time download)</option>
+                </select>
+              </div>
+              <div class="setting-hint">Saved for this video: later clips from it render instantly without this editor.</div>
+              <label class="setting-checkbox-row"><input type="checkbox" id="chk-auto-process"> New videos: reuse the last layout too (never open this editor)</label>
+            </div>
+
+            <div class="modal-actions">
+              <button id="btn-cancel-crop" class="action-btn secondary-btn">Cancel</button>
+              <button id="btn-apply-render" class="action-btn primary-btn">Render in background ⏎</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast-container" class="toast-shelf"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

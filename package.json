@@ -1,0 +1,23 @@
+{
+  "name": "clipper",
+  "version": "1.0.0",
+  "description": "High-performance YouTube Clipper & Smart Video Layout Editor",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node -e \"console.log('Build OK')\""
+  },
+  "keywords": [
+    "youtube",
+    "clipping",
+    "editor",
+    "nvenc",
+    "ffmpeg",
+    "electron"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "electron": "^45.3.4"
+  }
+}

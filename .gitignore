@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+tools/venv/
+__pycache__/
+*.pyc
+
+# Personal settings & logs (defaults live in src/services/config-manager.js)
+config.json
+clipper.log
+*.log
+
+# Recorded / rendered media and caches
+clips/
+tools/subs/
+tools/models/
+
+# Local backups
+_backup_before_fix/
+_backup_before_perf/
+_backup*/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
