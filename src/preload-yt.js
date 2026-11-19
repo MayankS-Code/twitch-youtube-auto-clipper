@@ -281,6 +281,7 @@ const { ipcRenderer } = require('electron');
         h('span', { id: 'clipper-readout', text: 'A --:-- · B --:--' }),
         h('button', { type: 'button', dataset: { act: 'out' }, text: 'B: Out [O]' }),
         h('button', { type: 'button', dataset: { act: 'clip' }, class: 'primary', text: 'Clip A→B' }),
+        h('button', { type: 'button', dataset: { act: 'grab-60' }, class: 'primary', style: 'background:#059669; border-color:#10b981;', text: '⚡ Fetch 60s [G]' }),
         h('button', { type: 'button', dataset: { act: 'clear' }, class: 'ghost', text: '✕' })
       ]);
       qb.addEventListener('click', (e) => {
@@ -291,6 +292,7 @@ const { ipcRenderer } = require('electron');
         if (act === 'in') setPointA();
         else if (act === 'out') setPointB();
         else if (act === 'clip') recordRangeAB();
+        else if (act === 'grab-60') grabLast60Seconds();
         else if (act === 'clear') clearPoints();
       });
       qb.addEventListener('mousedown', e => e.stopPropagation());
@@ -812,6 +814,38 @@ const { ipcRenderer } = require('electron');
     }
   }
 
+  function grabStreamSlice(seconds = 60) {
+    const sec = Number(seconds) === 30 ? 30 : 60;
+    const video = getVideo();
+    if (!video) {
+      showToast('⚠️ No video player active');
+      return false;
+    }
+
+    const curTime = (video && !isNaN(video.currentTime)) ? video.currentTime : 0;
+    const startTime = Math.max(0, curTime - sec);
+    const endTime = curTime;
+    const snap = grabFrame(video, 0.95);
+    const title = getTitle();
+
+    showToast(`⚡ Fetching last ${sec}s directly from stream server (0% lag)...`);
+    toHost('grab-stream-clip', {
+      pageUrl: location.href,
+      startTime,
+      endTime,
+      duration: sec,
+      title,
+      snapshotDataUrl: snap,
+      videoId: getVideoId(),
+      videoWidth: video.videoWidth || 1920,
+      videoHeight: video.videoHeight || 1080
+    });
+    return true;
+  }
+  function grabLast60Seconds() {
+    return grabStreamSlice(60);
+  }
+
   function liveTick() {
     if (!liveWanted) return;
     if (live) {
@@ -992,13 +1026,12 @@ const { ipcRenderer } = require('electron');
     if (Date.now() - lastAutoAt < AUTO.COOLDOWN_MS) return false;
     lastAutoAt = Date.now();
     chatMsgs = []; // need fresh messages before the next chat trigger
-    showToast(`Moment detected (${reason}) — auto clipping 30s`);
+    showToast(`⚡ Moment detected (${reason}) — auto-fetching 30s stream slice (0% lag)...`);
     toHost('auto-clip', { reason, ...info });
-    // the tolerance adjuster only counts clips that were really saved
-    liveClip(30).then(ok => {
-      if (ok) autoClipTimes.push(Date.now());
-      else toHost('clipper-info', `auto-clip (${reason}) did not produce a clip`);
-    });
+    // Use direct stream fetch (0% lag, full 60fps, no MediaRecorder needed!)
+    const ok = grabStreamSlice(30);
+    if (ok) autoClipTimes.push(Date.now());
+    else toHost('clipper-info', `auto-clip (${reason}) did not produce a clip`);
     return true;
   }
 
@@ -1008,6 +1041,7 @@ const { ipcRenderer } = require('electron');
   // ---------------------------------------------------------
   const LOUD = { SPIKE_DB: 12, MIN_DB: -22, HOLD_MS: 700, WARMUP_MS: 20000 };
   let loud = null; // { ctx, analyser, video, buf, baseline, since, startedAt, timer }
+  let audioStream = null;
 
   function loudStop() {
     if (!loud) return;
@@ -1019,23 +1053,34 @@ const { ipcRenderer } = require('electron');
   function loudStart() {
     const video = getVideo();
     if (!video || video.paused || !video.videoWidth) return;
-    // Reuse the live buffer's own captured audio (no second captureStream() on the same video).
-    if (!live || live.video !== video) return;
-    const track = live.stream.getAudioTracks().find(t => t.readyState === 'live');
-    if (!track) return;
-    const ctx = new AudioContext();
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 2048;
-    ctx.createMediaStreamSource(new MediaStream([track])).connect(analyser); // not connected to speakers
-    loud = { ctx, analyser, video, stream: live.stream, buf: new Float32Array(analyser.fftSize), baseline: null, since: 0, startedAt: Date.now(), short: -90 };
-    track.addEventListener('ended', loudStop);
-    loud.timer = setInterval(loudTick, 100);
+    if (loud && loud.video === video) return;
+    loudStop();
+
+    try {
+      if (!audioStream || audioStream.video !== video) {
+        // Capture audio track only — stop video track immediately so Chromium does 0 video encoding!
+        const fullStream = video.captureStream ? video.captureStream() : null;
+        if (!fullStream) return;
+        fullStream.getVideoTracks().forEach(t => t.stop());
+        audioStream = { video, stream: fullStream };
+      }
+      const track = audioStream.stream.getAudioTracks().find(t => t.readyState === 'live');
+      if (!track) return;
+      const ctx = new AudioContext();
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 2048;
+      ctx.createMediaStreamSource(new MediaStream([track])).connect(analyser); // not connected to speakers
+      loud = { ctx, analyser, video, stream: audioStream.stream, buf: new Float32Array(analyser.fftSize), baseline: null, since: 0, startedAt: Date.now(), short: -90 };
+      track.addEventListener('ended', loudStop);
+      loud.timer = setInterval(loudTick, 100);
+    } catch (e) {
+      reportError('loudStart', e);
+    }
   }
 
   function loudTick() {
     if (!loud) return;
-    // follow the live buffer: when it re-captures, re-attach to its new audio on the next tick
-    if (loud.video !== getVideo() || !live || live.stream !== loud.stream) { loudStop(); return; }
+    if (loud.video !== getVideo() || (audioStream && audioStream.video !== getVideo())) { loudStop(); return; }
     if (!shouldRun(loud.video)) { loud.since = 0; return; } // paused / ad / buffering
     if (loud.ctx.state === 'suspended') loud.ctx.resume().catch(() => {});
     loud.analyser.getFloatTimeDomainData(loud.buf);
@@ -1104,18 +1149,45 @@ const { ipcRenderer } = require('electron');
     return toleranceNow();
   };
 
+  let chatWanted = true;
+  let soundWanted = true;
+
   function autoTick() {
     if (!autoWanted) return;
-    const ok = attachChat();
-    if (!loud) loudStart();
-    toHost('auto-state', { on: true, chat: ok, audio: !!loud, tolerance: toleranceNow(), window: AUTO.WINDOW });
+    let ok = false;
+    if (chatWanted) {
+      ok = attachChat();
+    } else if (chatObserver) {
+      chatObserver.disconnect();
+      chatObserver = null;
+      chatItems = null;
+      chatMsgs = [];
+    }
+
+    if (soundWanted) {
+      if (!loud) loudStart();
+    } else if (loud) {
+      loudStop();
+    }
+
+    toHost('auto-state', {
+      on: true,
+      chat: ok && chatWanted,
+      audio: !!loud && soundWanted,
+      tolerance: toleranceNow(),
+      window: AUTO.WINDOW
+    });
   }
   window.__clipperLoud = () => loud ? JSON.stringify({ short: Math.round(loud.short), baseline: Math.round(loud.baseline) }) : 'off';
   setInterval(autoTick, 2000);
 
   function setAuto(data) {
     const on = typeof data === 'object' && data !== null ? data.on : data;
-    if (data && typeof data === 'object' && data.tolerances) tolerances = { ...data.tolerances };
+    if (data && typeof data === 'object') {
+      if (typeof data.chat === 'boolean') chatWanted = data.chat;
+      if (typeof data.sound === 'boolean') soundWanted = data.sound;
+      if (data.tolerances) tolerances = { ...data.tolerances };
+    }
     if (on && !autoWanted) { autoStartedAt = Date.now(); lastAdjustAt = autoStartedAt; autoClipTimes = []; }
     autoWanted = !!on;
     if (!autoWanted) {
@@ -1125,6 +1197,13 @@ const { ipcRenderer } = require('electron');
       chatItems = null;
       chatMsgs = [];
     } else {
+      if (!soundWanted) loudStop();
+      if (!chatWanted && chatObserver) {
+        chatObserver.disconnect();
+        chatObserver = null;
+        chatItems = null;
+        chatMsgs = [];
+      }
       autoTick();
     }
   }
@@ -1149,7 +1228,7 @@ const { ipcRenderer } = require('electron');
     else if (key === 'i') setPointA();
     else if (key === 'o') setPointB();
     else if (key === 'h') liveClip(60);
-    else if (key === 'g') liveClip(30);
+    else if (key === 'g') grabLast60Seconds();
     else handled = false;
     if (handled) {
       e.preventDefault();
@@ -1172,6 +1251,8 @@ const { ipcRenderer } = require('electron');
       case 'set-out-point': setPointB(); break;
       case 'record-range': recordRangeAB(); break;
       case 'clear-points': clearPoints(); break;
+      case 'grab-stream-slice': grabStreamSlice(data || 60); break;
+      case 'grab-last-60s': grabStreamSlice(60); break;
       case 'set-hotkeys-enabled': hotkeysEnabled = !!data; break;
       case 'set-live':
         liveWanted = !!data;

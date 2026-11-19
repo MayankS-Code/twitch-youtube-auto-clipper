@@ -26,14 +26,13 @@ const DEFAULT_CONFIG = {
     autoProcessSaved: false
   },
   encoding: {
-    // Off by default: the live buffer already uses the GPU's single H.264 encoder nonstop;
-    // a render using it too made the player drop 50–70% of frames. CPU (2 threads, idle) is ~16s/clip.
-    useNvenc: false,
-    captionsOnGpu: false, // Whisper on CPU is ~6s/clip and leaves the GPU to the player
+    // NVENC hardware acceleration: uses the dedicated NVENC ASIC on Nvidia GPUs (0% CPU impact)
+    useNvenc: true,
+    captionsOnGpu: false, // Whisper on CPU is fast and leaves the GPU to the player
     crf: 20
   },
   live: {
-    enabled: false              // rolling 60s replay buffer
+    enabled: false              // rolling MediaRecorder buffer disabled to prevent player lag
   },
   output: {
     finalDir: path.join(os.homedir(), 'Videos', 'Clipper Clips') // where finished 1080x1920 clips are saved

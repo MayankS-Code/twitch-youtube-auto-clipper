@@ -22,40 +22,55 @@
       </div>
 
       <div class="clipper-controls-cluster">
-        <div class="hotkey-pill" id="hotkey-toggle-btn" title="Click to enable/disable hotkeys">
-          <span class="hotkey-kbd">J</span><span class="hotkey-label">Rec</span>
-          <span class="hotkey-divider">/</span>
-          <span class="hotkey-kbd">K</span><span class="hotkey-label">Stop</span>
-          <span class="status-indicator active" id="hotkey-status-dot"></span>
+        <!-- Mode Switch Slider: Record <-> Fetcher -->
+        <div class="mode-slider-wrap">
+          <div class="mode-slider" id="mode-slider">
+            <div class="slider-thumb" id="slider-thumb"></div>
+            <button id="opt-record" class="mode-opt active" type="button" title="Switch to Record mode (J to start, K to stop)">Record</button>
+            <button id="opt-fetcher" class="mode-opt" type="button" title="Switch to Fetcher mode (0% stream lag, G to fetch)">Fetcher</button>
+          </div>
         </div>
 
-        <div class="points-pill">
-          <button id="btn-mark-in" class="point-btn" title="Set In-Point [I]">A [I]</button>
-          <span id="points-summary" class="points-text">A --:-- · B --:--</span>
-          <button id="btn-mark-out" class="point-btn" title="Set Out-Point [O]">B [O]</button>
-          <button id="btn-clip-ab" class="point-btn clip-btn" title="Replay A→B and record">Clip A→B</button>
-        </div>
-
-        <div class="live-pill">
-          <button id="btn-live-toggle" class="live-toggle" title="Keep a rolling buffer of the last 60s while the video plays">
-            <span class="live-dot"></span><span id="live-text">Live off</span>
-          </button>
-          <button id="btn-live-clip-30" class="live-clip-btn" title="Save the last 30 seconds [G]" disabled>✂ 30s [G]</button>
-          <button id="btn-live-clip" class="live-clip-btn" title="Save the last 60 seconds [H]" disabled>✂ 60s [H]</button>
-          <button id="btn-auto-clip" class="live-clip-btn auto-btn" title="Auto-clip the last 30s when enough of the last 15 chat messages share a word (default 4, auto-tuned per channel every 5 min), or the stream audio suddenly gets much louder">⚡ Auto clip: off</button>
-        </div>
-
-        <button id="btn-manual-rec" class="action-btn rec-btn" title="Record (J) / Stop (K)">
-          <span class="rec-circle"></span><span id="manual-rec-text">Record</span>
+        <!-- Primary Action Trigger -->
+        <button id="btn-primary-action" class="action-btn rec-btn" title="Record (J) / Stop (K)">
+          <span class="rec-circle" id="primary-action-icon"></span>
+          <span id="primary-action-text">Record</span>
         </button>
 
-        <button id="btn-open-crop-editor" class="action-btn secondary-btn" title="Edit webcam & gameplay rectangles">📐 Layout</button>
+        <!-- 30s / 60s Duration Buttons -->
+        <div class="dur-cluster" id="dur-cluster">
+          <button id="btn-dur-30" class="dur-btn" type="button" title="Set duration 30s">30</button>
+          <button id="btn-dur-60" class="dur-btn active" type="button" title="Set duration 60s">60</button>
+        </div>
 
-        <button id="btn-toggle-queue" class="action-btn queue-btn" title="Background render queue">
+        <div class="bar-divider"></div>
+
+        <!-- Auto Clipper Cluster -->
+        <div class="auto-clipper-cluster">
+          <button id="btn-auto-master" class="auto-master-toggle" type="button" title="Auto Clipper ON/OFF">
+            <span class="toggle-pill"><span class="toggle-circle"></span></span>
+            <span class="auto-title">⚡ Auto</span>
+          </button>
+          <div class="auto-sub-cluster">
+            <button id="btn-toggle-sound" class="auto-sub-btn active" type="button" title="Sound spike detection (ON/OFF)">
+              <span class="sub-icon">🔊</span>
+              <span class="sub-text">Sound</span>
+            </button>
+            <button id="btn-toggle-chat" class="auto-sub-btn active" type="button" title="Chat hype detection (ON/OFF)">
+              <span class="sub-icon">💬</span>
+              <span class="sub-text">Chat</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="bar-divider"></div>
+
+        <!-- Utility Buttons -->
+        <button id="btn-open-crop-editor" class="action-btn secondary-btn" title="Edit 3:4 Webcam & Gameplay Layout">📐 Layout</button>
+        <button id="btn-toggle-queue" class="action-btn queue-btn" title="Background Render Queue">
           Queue <span id="queue-badge" class="badge">0</span>
         </button>
-
-        <button id="btn-open-folder" class="action-btn icon-btn" title="Open final clips folder">📁</button>
+        <button id="btn-open-folder" class="action-btn icon-btn" title="Open Final Video Clips Folder">📁</button>
       </div>
     </header>
 
@@ -164,12 +179,12 @@
 
             <div class="layout-settings-group">
               <div class="setting-row">
-                <label for="webcam-shape-select">Webcam (top 30%)</label>
+                <label for="webcam-shape-select">Webcam shape</label>
                 <select id="webcam-shape-select" class="dropdown">
-                  <option value="4:3">4:3 wide (768×576)</option>
-                  <option value="3:4">3:4 tall (432×576)</option>
-                  <option value="16:9">16:9 wide (1024×576)</option>
-                  <option value="full">Full width, no side bars (1080×576)</option>
+                  <option value="3:4" selected>3:4 vertical (recommended)</option>
+                  <option value="4:3">4:3 wide</option>
+                  <option value="16:9">16:9 widescreen</option>
+                  <option value="full">Full width (1080px)</option>
                 </select>
               </div>
               <div class="setting-row">

@@ -6,17 +6,33 @@ const $ = (id) => document.getElementById(id);
 // ---------- Elements
 const webview = $('yt-webview');
 const urlInput = $('url-input');
-const pointsSummary = $('points-summary');
-const btnManualRec = $('btn-manual-rec');
-const manualRecText = $('manual-rec-text');
+
+// Mode slider & primary action
+const modeSlider = $('mode-slider');
+const optRecord = $('opt-record');
+const optFetcher = $('opt-fetcher');
+const btnPrimaryAction = $('btn-primary-action');
+const primaryActionIcon = $('primary-action-icon');
+const primaryActionText = $('primary-action-text');
+
+// Duration buttons
+const btnDur30 = $('btn-dur-30');
+const btnDur60 = $('btn-dur-60');
+
+// Auto Clipper
+const btnAutoMaster = $('btn-auto-master');
+const btnToggleSound = $('btn-toggle-sound');
+const btnToggleChat = $('btn-toggle-chat');
+
+// Overlays & drawers
 const hostRecHud = $('host-rec-hud');
 const hostRecTimer = $('host-rec-timer');
-const hotkeyStatusDot = $('hotkey-status-dot');
 const queueDrawer = $('queue-drawer');
 const queueBadge = $('queue-badge');
 const queueList = $('queue-list');
 const toastContainer = $('toast-container');
 
+// Crop modal
 const cropModal = $('crop-modal');
 const modalTitle = $('modal-title');
 const canvasWrapper = $('canvas-wrapper');
@@ -36,6 +52,8 @@ const btnApplyRender = $('btn-apply-render');
 
 // ---------- State
 let webviewReady = false;
+let currentMode = 'record'; // 'record' | 'fetcher'
+let selectedDuration = 60; // 30 | 60
 let isRecording = false;
 let recTimer = null;
 let recStart = 0;
@@ -44,6 +62,9 @@ let completedClips = [];
 let pendingClips = [];
 let appConfig = {};
 let liveOn = false;
+let autoOn = false;
+let soundEnabled = true;
+let chatEnabled = true;
 
 async function reloadConfig() {
   appConfig = await ipcRenderer.invoke('get-config');
@@ -51,8 +72,8 @@ async function reloadConfig() {
 }
 
 const DEFAULT_CROP = {
-  webcam: { x: 0.02, y: 0.04, width: 0.16, height: 0.38 },
-  gameplay: { x: 0.25, y: 0.05, width: 0.7, height: 0.9 }
+  webcam: { x: 0.05, y: 0.05, width: 0.25, height: 0.44 },
+  gameplay: { x: 0.0, y: 0.0, width: 1.0, height: 1.0 }
 };
 let cropState = JSON.parse(JSON.stringify(DEFAULT_CROP));
 let editingClip = null;
@@ -82,10 +103,10 @@ function logError(msg) {
 window.addEventListener('error', (e) => logError(`renderer error: ${e.message} @ ${e.filename}:${e.lineno}`));
 window.addEventListener('unhandledrejection', (e) => logError(`renderer rejection: ${e.reason && (e.reason.stack || e.reason)}`));
 
-// ---------- Webview bridge (single path: IPC; never throws)
+// ---------- Webview bridge
 function sendToWebview(command, data) {
   if (!webviewReady) {
-    showToast('YouTube is still loading — try again in a second');
+    showToast('Page is still loading — try again in a second');
     return false;
   }
   try {
@@ -93,29 +114,35 @@ function sendToWebview(command, data) {
     return true;
   } catch (e) {
     logError('sendToWebview failed: ' + e.message);
-    showToast('Could not reach the YouTube page: ' + e.message, 'error');
+    showToast('Could not reach the page: ' + e.message, 'error');
     return false;
   }
+}
+
+// auto clip payload with chat and sound toggles
+function autoPayload() {
+  return {
+    on: !!autoOn,
+    chat: !!chatEnabled,
+    sound: !!soundEnabled,
+    tolerances: (appConfig.live && appConfig.live.tolerances) || {}
+  };
 }
 
 webview.addEventListener('dom-ready', () => {
   webviewReady = true;
   sendToWebview('set-hotkeys-enabled', hotkeysEnabled);
   sendToWebview('set-live', liveOn);
-  sendToWebview('set-auto-clip', autoPayload(autoOn));
+  sendToWebview('set-auto-clip', autoPayload());
 });
 
-// auto clip on/off + the per-channel tolerances learned so far
-function autoPayload(on) {
-  return { on: !!on, tolerances: (appConfig.live && appConfig.live.tolerances) || {} };
-}
 webview.addEventListener('did-start-navigation', (e) => { if (e.isMainFrame && !e.isInPlace) webviewReady = false; });
 webview.addEventListener('did-navigate', (e) => { urlInput.value = e.url; });
 webview.addEventListener('did-navigate-in-page', (e) => { if (e.isMainFrame) urlInput.value = e.url; });
 webview.addEventListener('render-process-gone', () => {
   webviewReady = false;
   setRecordingUi(false);
-  showToast('YouTube page crashed — reloading', 'error');
+  showToast('Player page crashed — reloading', 'error');
   webview.reload();
 });
 
@@ -123,23 +150,13 @@ webview.addEventListener('ipc-message', (event) => {
   const args = (event.args && event.args[0]) || {};
   switch (event.channel) {
     case 'recording-state-changed': setRecordingUi(!!args.isRecording); break;
-    case 'points-updated':
-      pointsSummary.textContent = `A ${formatTime(args.inPoint)} · B ${formatTime(args.outPoint)}`;
-      break;
     case 'clip-captured': handleClipCaptured(args); break;
     case 'clip-saved': handleSavedClip(args); break;
-    case 'live-state': setLiveUi(!!args.on, args.seconds || 0, !!args.paused); break;
-    case 'auto-state': if (autoOn) setAutoUi(true, !!args.chat, !!args.audio, args.tolerance, args.window); break;
-    case 'tolerance-changed':
-      appConfig.live = appConfig.live || {};
-      appConfig.live.tolerances = { ...(appConfig.live.tolerances || {}), [args.videoId]: args.tolerance };
-      ipcRenderer.invoke('save-config', { live: { tolerances: { [args.videoId]: args.tolerance } } });
-      logError(`tolerance ${args.videoId}: ${args.previous} -> ${args.tolerance} (${args.clips} clips in 5 min)`);
-      break;
+    case 'grab-stream-clip': handleStreamClipGrabbed(args); break;
     case 'auto-clip':
       showToast(args.loud
-        ? `⚡ Loud moment: audio jumped +${args.jump} dB — clipping last 30s`
-        : `⚡ Chat moment: "${args.word}" ×${args.count} from ${args.authors} people — clipping last 30s`, 'success', 5000);
+        ? `⚡ Loud audio spike (+${args.jump} dB) — clipping last 30s`
+        : `⚡ Chat hype moment ("${args.word}" ×${args.count}) — clipping last 30s`, 'success', 5000);
       logError(`auto-clip: ${args.reason}`);
       break;
     case 'snapshot-captured':
@@ -159,20 +176,34 @@ webview.addEventListener('ipc-message', (event) => {
 // ---------- Init
 async function initApp() {
   const cfg = await reloadConfig();
-  liveOn = !!(cfg.live && cfg.live.enabled);
+  liveOn = false; // in-browser MediaRecorder kept off to eliminate playback lag
   autoOn = !!(cfg.live && cfg.live.autoClip);
-  if (autoOn) liveOn = true;
-  setLiveUi(liveOn, 0, true);
-  setAutoUi(autoOn);
+  soundEnabled = !(cfg.live && cfg.live.sound === false);
+  chatEnabled = !(cfg.live && cfg.live.chat === false);
+
+  if (btnAutoMaster) btnAutoMaster.classList.toggle('on', autoOn);
+  if (btnToggleSound) {
+    btnToggleSound.classList.toggle('active', soundEnabled);
+    btnToggleSound.classList.toggle('dimmed', !autoOn);
+  }
+  if (btnToggleChat) {
+    btnToggleChat.classList.toggle('active', chatEnabled);
+    btnToggleChat.classList.toggle('dimmed', !autoOn);
+  }
+
+  setMode('record');
+  setDuration(60);
+
   if (cfg.crop && cfg.crop.webcam && cfg.crop.gameplay) {
     cropState = { webcam: clampRect(cfg.crop.webcam), gameplay: clampRect(cfg.crop.gameplay) };
   }
   const L = cfg.layout || {};
-  webcamShapeSelect.value = ['4:3', '3:4', '16:9', 'full'].includes(L.webcamShape) ? L.webcamShape : '4:3';
-  bgStyleSelect.value = L.backgroundMode || 'blur';
-  chkAutoProcess.checked = !!L.autoProcessSaved;
+  if (webcamShapeSelect) {
+    webcamShapeSelect.value = ['3:4', '4:3', '16:9', 'full'].includes(L.webcamShape) ? L.webcamShape : '3:4';
+  }
+  if (bgStyleSelect) bgStyleSelect.value = L.backgroundMode || 'blur';
+  if (chkAutoProcess) chkAutoProcess.checked = !!L.autoProcessSaved;
   hotkeysEnabled = !(cfg.hotkeys && cfg.hotkeys.enabled === false);
-  hotkeyStatusDot.classList.toggle('active', hotkeysEnabled);
   updateQueueUI();
 }
 initApp();
@@ -207,35 +238,181 @@ function navigateToUrl() {
 urlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') navigateToUrl(); });
 $('btn-go').onclick = navigateToUrl;
 
-// ---------- Recording controls
-$('hotkey-toggle-btn').onclick = () => {
-  hotkeysEnabled = !hotkeysEnabled;
-  hotkeyStatusDot.classList.toggle('active', hotkeysEnabled);
-  sendToWebview('set-hotkeys-enabled', hotkeysEnabled);
-  ipcRenderer.invoke('save-config', { hotkeys: { enabled: hotkeysEnabled } });
-  showToast(hotkeysEnabled ? 'Hotkeys J/K/I/O on' : 'Hotkeys off');
-};
-$('btn-mark-in').onclick = () => sendToWebview('set-in-point');
-$('btn-mark-out').onclick = () => sendToWebview('set-out-point');
-$('btn-clip-ab').onclick = () => sendToWebview('record-range');
-btnManualRec.onclick = () => sendToWebview(isRecording ? 'stop-recording' : 'start-recording');
+// ---------- Mode Switching & Actions
+function setMode(mode) {
+  currentMode = mode;
+  if (modeSlider) {
+    modeSlider.classList.toggle('mode-fetcher', mode === 'fetcher');
+  }
+  if (optRecord) optRecord.classList.toggle('active', mode === 'record');
+  if (optFetcher) optFetcher.classList.toggle('active', mode === 'fetcher');
+  updatePrimaryActionUi();
+}
+
+function updatePrimaryActionUi() {
+  if (!btnPrimaryAction) return;
+  if (currentMode === 'record') {
+    btnPrimaryAction.className = 'action-btn rec-btn' + (isRecording ? ' recording' : '');
+    btnPrimaryAction.title = 'Record (J) / Stop (K)';
+    if (primaryActionIcon) {
+      primaryActionIcon.className = 'rec-circle';
+      primaryActionIcon.textContent = '';
+    }
+    if (primaryActionText) {
+      primaryActionText.textContent = isRecording ? 'Stop' : 'Record';
+    }
+  } else {
+    btnPrimaryAction.className = 'action-btn fetch-btn';
+    btnPrimaryAction.title = `Direct Stream Fetch: Grab Last ${selectedDuration}s without lag [G]`;
+    if (primaryActionIcon) {
+      primaryActionIcon.className = 'fetch-icon';
+      primaryActionIcon.textContent = '⚡';
+    }
+    if (primaryActionText) {
+      primaryActionText.textContent = `Fetch ${selectedDuration}s`;
+    }
+  }
+}
+
+function setDuration(sec) {
+  selectedDuration = sec === 30 ? 30 : 60;
+  if (btnDur30) btnDur30.classList.toggle('active', selectedDuration === 30);
+  if (btnDur60) btnDur60.classList.toggle('active', selectedDuration === 60);
+  if (currentMode === 'fetcher') {
+    updatePrimaryActionUi();
+  }
+}
+
+function triggerFetch(sec) {
+  const duration = sec || selectedDuration || 60;
+  sendToWebview('grab-stream-slice', duration);
+  showToast(`⚡ Fetching last ${duration}s stream slice directly (0% lag)...`);
+}
+
+// Mode Slider buttons
+if (optRecord) {
+  optRecord.onclick = () => {
+    if (currentMode !== 'record') {
+      setMode('record');
+    } else {
+      sendToWebview(isRecording ? 'stop-recording' : 'start-recording');
+    }
+  };
+}
+
+if (optFetcher) {
+  optFetcher.onclick = () => {
+    if (currentMode !== 'fetcher') {
+      setMode('fetcher');
+    } else {
+      triggerFetch(selectedDuration);
+    }
+  };
+}
+
+// Primary action button
+if (btnPrimaryAction) {
+  btnPrimaryAction.onclick = () => {
+    if (currentMode === 'record') {
+      sendToWebview(isRecording ? 'stop-recording' : 'start-recording');
+    } else {
+      triggerFetch(selectedDuration);
+    }
+  };
+}
+
+// 30 / 60 duration buttons
+if (btnDur30) {
+  btnDur30.onclick = () => {
+    setDuration(30);
+    if (currentMode === 'fetcher') {
+      triggerFetch(30);
+    }
+  };
+}
+
+if (btnDur60) {
+  btnDur60.onclick = () => {
+    setDuration(60);
+    if (currentMode === 'fetcher') {
+      triggerFetch(60);
+    }
+  };
+}
+
+// Auto Clipper controls
+function setAuto(on, save = true) {
+  autoOn = !!on;
+  if (btnAutoMaster) {
+    btnAutoMaster.classList.toggle('on', autoOn);
+  }
+  if (btnToggleSound) btnToggleSound.classList.toggle('dimmed', !autoOn);
+  if (btnToggleChat) btnToggleChat.classList.toggle('dimmed', !autoOn);
+
+  // Auto-Clipper uses direct stream fetcher (0% browser lag, full 60fps)
+  sendToWebview('set-auto-clip', autoPayload());
+  if (save) {
+    ipcRenderer.invoke('save-config', {
+      live: {
+        autoClip: autoOn,
+        sound: soundEnabled,
+        chat: chatEnabled
+      }
+    });
+  }
+}
+
+if (btnAutoMaster) {
+  btnAutoMaster.onclick = () => {
+    setAuto(!autoOn);
+    const activeModes = [soundEnabled && 'Sound', chatEnabled && 'Chat'].filter(Boolean).join(' + ');
+    showToast(autoOn ? `⚡ Auto Clipper ON (${activeModes || 'Watching'})` : 'Auto Clipper OFF');
+  };
+}
+
+if (btnToggleSound) {
+  btnToggleSound.onclick = () => {
+    soundEnabled = !soundEnabled;
+    btnToggleSound.classList.toggle('active', soundEnabled);
+    if (autoOn) sendToWebview('set-auto-clip', autoPayload());
+    ipcRenderer.invoke('save-config', { live: { sound: soundEnabled } });
+    showToast(`🔊 Sound detection: ${soundEnabled ? 'ON' : 'OFF'}`);
+  };
+}
+
+if (btnToggleChat) {
+  btnToggleChat.onclick = () => {
+    chatEnabled = !chatEnabled;
+    btnToggleChat.classList.toggle('active', chatEnabled);
+    if (autoOn) sendToWebview('set-auto-clip', autoPayload());
+    ipcRenderer.invoke('save-config', { live: { chat: chatEnabled } });
+    showToast(`💬 Chat detection: ${chatEnabled ? 'ON' : 'OFF'}`);
+  };
+}
+
+// Recording HUD and state
 $('btn-hud-stop').onclick = () => sendToWebview('stop-recording');
 
 function setRecordingUi(rec) {
   if (rec === isRecording) return;
   isRecording = rec;
-  btnManualRec.classList.toggle('recording', rec);
-  manualRecText.textContent = rec ? 'Stop' : 'Record';
-  hostRecHud.classList.toggle('hidden', !rec);
+  updatePrimaryActionUi();
+  if (hostRecHud) hostRecHud.classList.toggle('hidden', !rec);
   clearInterval(recTimer);
   if (rec) {
     recStart = Date.now();
-    hostRecTimer.textContent = '00:00';
-    recTimer = setInterval(() => { hostRecTimer.textContent = formatTime((Date.now() - recStart) / 1000); }, 250);
+    if (hostRecTimer) hostRecTimer.textContent = '00:00';
+    recTimer = setInterval(() => {
+      const elapsed = formatTime((Date.now() - recStart) / 1000);
+      if (hostRecTimer) hostRecTimer.textContent = elapsed;
+      if (currentMode === 'record' && primaryActionText) {
+        primaryActionText.textContent = `Stop (${elapsed})`;
+      }
+    }, 250);
   }
 }
 
-// Hotkeys when focus is in this window (e.g. after clicking a toolbar button or with the editor open)
+// Hotkeys
 document.addEventListener('keydown', (e) => {
   const modalOpen = !cropModal.classList.contains('hidden');
   if (modalOpen) {
@@ -246,78 +423,31 @@ document.addEventListener('keydown', (e) => {
   if (!hotkeysEnabled || e.ctrlKey || e.altKey || e.metaKey) return;
   if (e.target && (e.target.tagName === 'INPUT' && e.target.type === 'text')) return;
   const k = (e.key || '').toLowerCase();
-  if (k === 'j' && !isRecording) sendToWebview('start-recording');
-  else if (k === 'k' && isRecording) sendToWebview('stop-recording');
-  else if (k === 'i' && !modalOpen) sendToWebview('set-in-point');
-  else if (k === 'o' && !modalOpen) sendToWebview('set-out-point');
-  else if (k === 'h') liveClip(60);
-  else if (k === 'g') liveClip(30);
-});
-
-// ---------- Live buffer
-const btnLiveToggle = $('btn-live-toggle');
-const btnLiveClip = $('btn-live-clip');
-const btnLiveClip30 = $('btn-live-clip-30');
-
-function setLiveUi(on, seconds, paused) {
-  btnLiveToggle.classList.toggle('on', on);
-  btnLiveToggle.classList.toggle('paused', on && paused);
-  $('live-text').textContent = on ? `Live ${seconds}s${paused ? ' ⏸' : ''}` : 'Live off';
-  btnLiveClip.disabled = !on || seconds < 1;
-  btnLiveClip30.disabled = !on || seconds < 1;
-}
-
-btnLiveToggle.onclick = () => {
-  liveOn = !liveOn;
-  if (!liveOn && autoOn) setAuto(false); // auto clip needs the live buffer
-  setLiveUi(liveOn, 0, true);
-  sendToWebview('set-live', liveOn);
-  ipcRenderer.invoke('save-config', { live: { enabled: liveOn } });
-  showToast(liveOn ? 'Live buffer on — keeps the last 60s while the video plays' : 'Live buffer off');
-};
-
-function liveClip(seconds = 60) {
-  if (!liveOn) { showToast('Turn on Live first'); return; }
-  sendToWebview('live-clip', seconds === 30 ? 30 : 60);
-}
-btnLiveClip.onclick = () => liveClip(60);
-btnLiveClip30.onclick = () => liveClip(30);
-
-// ---------- Auto clip from chat
-const btnAutoClip = $('btn-auto-clip');
-let autoOn = false;
-
-function setAutoUi(on, chatFound = true, audio = false, tolerance = null, windowSize = 15) {
-  btnAutoClip.classList.toggle('on', on);
-  btnAutoClip.classList.toggle('no-chat', on && !chatFound && !audio);
-  const watching = [chatFound && (tolerance ? `chat ${tolerance}/${windowSize}` : 'chat'), audio && 'audio'].filter(Boolean).join(' + ');
-  btnAutoClip.textContent = !on ? '⚡ Auto clip: off' : watching ? `⚡ Auto clip: ${watching}` : '⚡ Auto clip: waiting for stream';
-}
-
-function setAuto(on, save = true) {
-  autoOn = on;
-  if (on && !liveOn) {
-    // auto clips come from the live buffer, so it has to be running
-    liveOn = true;
-    setLiveUi(true, 0, true);
-    sendToWebview('set-live', true);
-    if (save) ipcRenderer.invoke('save-config', { live: { enabled: true } });
+  if (k === 'j' && !isRecording) {
+    setMode('record');
+    sendToWebview('start-recording');
   }
-  setAutoUi(on);
-  sendToWebview('set-auto-clip', autoPayload(on));
-  if (save) ipcRenderer.invoke('save-config', { live: { autoClip: on } });
-}
-
-btnAutoClip.onclick = () => {
-  setAuto(!autoOn);
-  showToast(autoOn ? 'Auto clip on: clips the last 30s when chat spams the same word' : 'Auto clip off');
-};
+  else if (k === 'k' && isRecording) sendToWebview('stop-recording');
+  else if (k === 'g') {
+    triggerFetch(selectedDuration);
+  }
+});
 
 // ---------- Clip pipeline
 async function handleClipCaptured(payload) {
   const saved = await ipcRenderer.invoke('save-raw-clip', payload);
   if (!saved.success) {
     showToast('Error saving clip: ' + saved.error, 'error', 6000);
+    return;
+  }
+  handleSavedClip(saved);
+}
+
+async function handleStreamClipGrabbed(payload) {
+  showToast('⚡ Fetching last 60s stream slice (0% lag)...');
+  const saved = await ipcRenderer.invoke('stream-fetch-clip', payload);
+  if (!saved.success) {
+    showToast('Error preparing stream clip: ' + saved.error, 'error', 6000);
     return;
   }
   handleSavedClip(saved);
@@ -363,6 +493,10 @@ async function enqueueClip(clip, crop, layout) {
     trimStart: clip.trimStart || 0,
     videoWidth: clip.videoWidth,
     videoHeight: clip.videoHeight,
+    pageUrl: clip.pageUrl,
+    startTime: clip.startTime,
+    endTime: clip.endTime,
+    isStreamFetch: clip.isStreamFetch || false,
     crop,
     layout
   });
@@ -402,7 +536,7 @@ function loadLayoutIntoEditor(videoId) {
     cropState = { webcam: clampRect(src.crop.webcam), gameplay: clampRect(src.crop.gameplay) };
   }
   const L = src.layout || {};
-  webcamShapeSelect.value = ['4:3', '3:4', '16:9', 'full'].includes(L.webcamShape) ? L.webcamShape : '4:3';
+  webcamShapeSelect.value = ['3:4', '4:3', '16:9', 'full'].includes(L.webcamShape) ? L.webcamShape : '3:4';
   bgStyleSelect.value = L.backgroundMode || 'blur';
   chkAutoProcess.checked = !!(appConfig.layout && appConfig.layout.autoProcessSaved);
   const C = L.captions || {};

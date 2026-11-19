@@ -7,6 +7,138 @@ const { computeLayout } = require('./layout-math');
 const { groupWords, buildAss } = require('./captions');
 const { toHinglish } = require('./hinglish');
 
+class StreamFetcher {
+  getDirectStreamUrls(pageUrl) {
+    return new Promise((resolve, reject) => {
+      const args = [
+        '-g',
+        '-f', 'bv*[height<=1080]+ba/b[height<=1080]',
+        pageUrl
+      ];
+
+      const proc = spawn('yt-dlp', args, { windowsHide: true });
+      let stdout = '';
+      let stderr = '';
+
+      proc.stdout.on('data', chunk => stdout += chunk);
+      proc.stderr.on('data', chunk => stderr += chunk);
+
+      proc.on('close', code => {
+        if (code === 0 && stdout.trim()) {
+          const urls = stdout.trim().split(/\r?\n/).map(u => u.trim()).filter(Boolean);
+          resolve(urls);
+        } else {
+          reject(new Error(`Failed to extract stream URLs: ${stderr.slice(-300)}`));
+        }
+      });
+
+      proc.on('error', err => reject(err));
+    });
+  }
+
+  async fetchSection(pageUrl, startTime, endTime, outputRawPath) {
+    const duration = Math.max(1, endTime - startTime);
+
+    try {
+      const urls = await this.getDirectStreamUrls(pageUrl);
+
+      if (urls.length >= 2) {
+        const vUrl = urls[0];
+        const aUrl = urls[1];
+
+        const args = [
+          '-ss', startTime.toFixed(2),
+          '-t', duration.toFixed(2),
+          '-i', vUrl,
+          '-ss', startTime.toFixed(2),
+          '-t', duration.toFixed(2),
+          '-i', aUrl,
+          '-c:v', 'copy',
+          '-c:a', 'copy',
+          '-y',
+          outputRawPath
+        ];
+
+        await this.runProcess('ffmpeg', args);
+        if (fs.existsSync(outputRawPath) && fs.statSync(outputRawPath).size > 1000) {
+          return outputRawPath;
+        }
+      } else if (urls.length === 1) {
+        const args = [
+          '-ss', startTime.toFixed(2),
+          '-t', duration.toFixed(2),
+          '-i', urls[0],
+          '-c:v', 'copy',
+          '-c:a', 'copy',
+          '-y',
+          outputRawPath
+        ];
+
+        await this.runProcess('ffmpeg', args);
+        if (fs.existsSync(outputRawPath) && fs.statSync(outputRawPath).size > 1000) {
+          return outputRawPath;
+        }
+      }
+    } catch (e) {
+      console.warn('Fast stream copy fallback to yt-dlp download-sections:', e.message);
+    }
+
+    const formatTime = (sec) => {
+      const h = Math.floor(sec / 3600).toString().padStart(2, '0');
+      const m = Math.floor((sec % 3600) / 60).toString().padStart(2, '0');
+      const s = Math.floor(sec % 60).toString().padStart(2, '0');
+      return `${h}:${m}:${s}`;
+    };
+
+    const sectionArg = `*${formatTime(startTime)}-${formatTime(endTime)}`;
+    const dlArgs = [
+      '--download-sections', sectionArg,
+      '-f', 'bv*[height<=1080]+ba/b[height<=1080]',
+      '--force-keyframes-at-cuts',
+      pageUrl,
+      '-o', outputRawPath
+    ];
+
+    await this.runProcess('yt-dlp', dlArgs);
+    if (fs.existsSync(outputRawPath)) {
+      return outputRawPath;
+    }
+
+    const dir = path.dirname(outputRawPath);
+    const base = path.basename(outputRawPath, path.extname(outputRawPath));
+    const matches = fs.readdirSync(dir).filter(f => f.startsWith(base));
+    if (matches.length > 0) {
+      return path.join(dir, matches[0]);
+    }
+
+    throw new Error('Could not fetch stream section directly');
+  }
+
+  runProcess(cmd, args) {
+    return new Promise((resolve, reject) => {
+      const proc = spawn(cmd, args, { windowsHide: true });
+      let stderr = '';
+
+      try {
+        if (os.constants.priority && os.constants.priority.PRIORITY_BELOW_NORMAL) {
+          os.setPriority(proc.pid, os.constants.priority.PRIORITY_BELOW_NORMAL);
+        }
+      } catch (e) {}
+
+      proc.stderr.on('data', chunk => stderr += chunk);
+
+      proc.on('close', code => {
+        if (code === 0) resolve();
+        else reject(new Error(`${cmd} exited with code ${code}: ${stderr.slice(-300)}`));
+      });
+
+      proc.on('error', err => reject(err));
+    });
+  }
+}
+
+const streamFetcher = new StreamFetcher();
+
 const n6 = (v) => Number(v).toFixed(6);
 const TOOLS_DIR = path.join(__dirname, '..', '..', 'tools');
 const SUBS_DIR = path.join(TOOLS_DIR, 'subs');
@@ -159,6 +291,17 @@ class FfmpegProcessor extends EventEmitter {
   }
 
   async renderClipWithFallback(job) {
+    if (job.isStreamFetch && (!job.rawPath || !fs.existsSync(job.rawPath))) {
+      this.emit('job-progress', { id: job.id, progress: 10, statusText: 'Fetching stream slice directly from server...' });
+      const fetchedPath = await streamFetcher.fetchSection(job.pageUrl, job.startTime, job.endTime, job.rawPath);
+      job.rawPath = fetchedPath;
+      if (!job.framePath || !fs.existsSync(job.framePath)) {
+        try {
+          await this.extractSnapshot(job.rawPath, job.framePath, 1.0);
+        } catch (e) {}
+      }
+    }
+
     try {
       await this.prepareCaptions(job);
     } catch (err) {

@@ -292,6 +292,40 @@ function setupIpcHandlers() {
     }
   });
 
+  ipcMain.handle('stream-fetch-clip', async (event, d) => {
+    try {
+      const timestamp = Date.now();
+      const base = `${sanitize(d.title)}_${timestamp}`;
+      const rawPath = path.join(RAW_DIR, `stream_${base}.mp4`);
+      const framePath = path.join(FRAMES_DIR, `frame_${base}.jpg`);
+
+      writeFrame(framePath, d.snapshotDataUrl);
+
+      const jobData = {
+        success: true,
+        id: `clip_${timestamp}`,
+        title: d.title || 'Stream Clip',
+        rawPath,
+        framePath: fs.existsSync(framePath) ? framePath : null,
+        pageUrl: d.pageUrl,
+        startTime: d.startTime,
+        endTime: d.endTime,
+        duration: Math.max(1, d.endTime - d.startTime),
+        isStreamFetch: true,
+        videoWidth: d.videoWidth || 1920,
+        videoHeight: d.videoHeight || 1080,
+        videoId: d.videoId || null,
+        timestamp
+      };
+
+      log('Stream fetch clip registered', d.pageUrl, `${d.startTime.toFixed(1)}s -> ${d.endTime.toFixed(1)}s`);
+      return jobData;
+    } catch (err) {
+      log('stream-fetch-clip failed', err.stack || err.message);
+      return { success: false, error: err.message };
+    }
+  });
+
   ipcMain.handle('save-raw-clip', async (event, { buffer, title, duration, videoWidth, videoHeight, snapshotDataUrl, videoId }) => {
     try {
       const timestamp = Date.now();
@@ -340,6 +374,10 @@ function setupIpcHandlers() {
         trimStart: d.trimStart || 0,
         videoWidth: d.videoWidth,
         videoHeight: d.videoHeight,
+        pageUrl: d.pageUrl,
+        startTime: d.startTime,
+        endTime: d.endTime,
+        isStreamFetch: d.isStreamFetch || false,
         crop: d.crop || cfg.crop,
         layout: Object.assign({}, cfg.layout, d.layout || {}, { outputWidth: 1080, outputHeight: 1920 }),
         useNvenc: !!(cfg.encoding && cfg.encoding.useNvenc),
